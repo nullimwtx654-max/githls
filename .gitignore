@@ -111,7 +111,7 @@ android/android-build.log
 # Dev-team workflow control-plane artefacts (story docs, designer asks,
 # screenshot inventories). Live in the dev-team repo and are sometimes
 # synced into the worktree for local reference; never committed here.
-# workflows/
+workflows/
 # Explicitly allow files required for standalone builds
 !.env
 !android/app/google-services.json
