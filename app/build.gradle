@@ -1,0 +1,35 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.voxelcraft.ultra'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.voxelcraft.ultra"
+        minSdk 21
+        targetSdk 34
+        versionCode 5
+        versionName "3.2.0"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.debug
+        }
+        debug {
+            debuggable true
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    // Pure Android framework - zero external dependency issues
+}
