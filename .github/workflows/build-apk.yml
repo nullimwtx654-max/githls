@@ -11,8 +11,11 @@ permissions:
 jobs:
   build-android-apk:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 360
     env:
+      ORG_GRADLE_PROJECT_rnllamaBuildFromSource: 'true'
+      ORG_GRADLE_PROJECT_rnllamaVariants: 'rnllama'
+      RNLLAMA_SKIP_POSTINSTALL: '1'
       PLUS_STORE_GATE: 'true'
       APP_RELEASE_STORE_PASSWORD: dummy-ci-password
       APP_RELEASE_KEY_PASSWORD: dummy-ci-password
@@ -73,17 +76,16 @@ jobs:
           find . \( -name "*.sh" -o -name "*.patch" -o -name "gradlew" -o -name ".env" \) -not -path "*/node_modules/*" -exec sed -i 's/\r$//' {} + 2>/dev/null || true
           chmod +x scripts/*.sh android/gradlew 2>/dev/null || true
 
-          # 5. Ensure android/gradle.properties and android/app/build.gradle ABI settings are consistent
-          sed -i 's/reactNativeArchitectures=arm64-v8a$/reactNativeArchitectures=arm64-v8a,x86_64/' android/gradle.properties || true
+          # 5. Lock Android build to arm64-v8a ONLY (eliminates x86_64 emulator compilation)
+          sed -i 's/reactNativeArchitectures=.*/reactNativeArchitectures=arm64-v8a/' android/gradle.properties || true
           sed -i '/rnllamaBuildFromSource=false/d' android/gradle.properties || true
-          python3 -c '
-          p = "android/app/build.gradle"
-          with open(p, "r") as f: c = f.read()
-          old = "ndk {\n            abiFilters \"arm64-v8a\", \"x86_64\"\n        }"
-          new = "ndk {\n            def archs = project.findProperty(\"reactNativeArchitectures\")\n            if (archs) { abiFilters (*archs.toString().split(\",\")) } else { abiFilters \"arm64-v8a\", \"x86_64\" }\n        }"
-          if old in c:
-              with open(p, "w") as f: f.write(c.replace(old, new, 1))
-          ' || true
+          node -e '
+            const fs = require("fs");
+            const p = "android/app/build.gradle";
+            let c = fs.readFileSync(p, "utf8");
+            c = c.replace(/abiFilters\s+"arm64-v8a",\s*"x86_64"/g, "abiFilters \"arm64-v8a\"");
+            fs.writeFileSync(p, c);
+          '
 
       - name: Maximize Build Space
         run: |
@@ -103,60 +105,35 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: '17'
+          cache: 'gradle'
 
       - name: Install Yarn & Dependencies
         run: |
           set -e
           npm install -g yarn || true
           rm -rf node_modules
-          yarn install --check-files --network-timeout 600000
-          # Verify critical React Native Gradle plugin & llama.rn exist in node_modules
+          yarn install --non-interactive --check-files --network-timeout 600000
           test -d node_modules/@react-native/gradle-plugin || { echo "ERROR: node_modules/@react-native/gradle-plugin missing!"; exit 1; }
           test -d node_modules/llama.rn || { echo "ERROR: node_modules/llama.rn missing!"; exit 1; }
+
+          # Clone OpenCL headers required by llama.rn CMake
           OPENCL_HEADERS_DIR="node_modules/llama.rn/third_party/OpenCL-Headers"
           if [ ! -d "$OPENCL_HEADERS_DIR" ]; then
             mkdir -p "node_modules/llama.rn/third_party"
             git clone --depth 1 https://github.com/KhronosGroup/OpenCL-Headers.git "$OPENCL_HEADERS_DIR"
           fi
 
-      - name: Derive rnllama Variant Allowlist
-        run: |
-          set -euo pipefail
-          VARIANTS=$(node scripts/verify-android-payload.js --print-variants)
-          echo "Declared allowlist: $VARIANTS"
-          echo "ORG_GRADLE_PROJECT_rnllamaVariants=$VARIANTS" >> "$GITHUB_ENV"
+          # Speed up whisper.rn C++ compilation by 4x: build only the primary rnwhisper library instead of 4 redundant CPU variants
+          if [ -f "node_modules/whisper.rn/android/src/main/CMakeLists.txt" ]; then
+            sed -i '/rnwhisper_v8/d' node_modules/whisper.rn/android/src/main/CMakeLists.txt || true
+          fi
 
-      - name: Cache llama.rn Native Build Tree
+      - name: Cache ccache
         uses: actions/cache@v4
         with:
-          path: node_modules/llama.rn/android/.cxx
-          key: ${{ runner.os }}-cxx-${{ hashFiles('yarn.lock', 'patches/**', 'scripts/android-payload-manifest.json') }}
-
-      - name: Set up Hexagon SDK
-        run: |
-          set -euo pipefail
-          HEXAGON_SDK_VERSION="6.4.0.2"
-          HEXAGON_TOOLS_VERSION="19.0.04"
-          SDK_ROOT="$HOME/.hexagon-sdk/$HEXAGON_SDK_VERSION"
-          TOOLS_ROOT="$SDK_ROOT/tools/HEXAGON_Tools/$HEXAGON_TOOLS_VERSION"
-          if [ ! -d "$SDK_ROOT" ]; then
-            STAGE=$(mktemp -d)
-            echo "Downloading Hexagon SDK $HEXAGON_SDK_VERSION..."
-            curl -fsSL -o "$STAGE/sdk.tar.xz" \
-              "https://github.com/snapdragon-toolchain/hexagon-sdk/releases/download/v${HEXAGON_SDK_VERSION}/hexagon-sdk-v${HEXAGON_SDK_VERSION}-amd64-lnx.tar.xz"
-            mkdir -p "$STAGE/unpacked"
-            tar --use-compress-program='xz -T0 -d' -xf "$STAGE/sdk.tar.xz" -C "$STAGE/unpacked"
-            rm -f "$STAGE/sdk.tar.xz"
-            mkdir -p "$HOME/.hexagon-sdk"
-            if [ -d "$STAGE/unpacked/incs" ]; then
-              mv "$STAGE/unpacked" "$SDK_ROOT"
-            else
-              INNER=$(find "$STAGE/unpacked" -maxdepth 1 -mindepth 1 -type d | head -n 1)
-              mv "$INNER" "$SDK_ROOT"
-            fi
-          fi
-          echo "HEXAGON_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
-          echo "HEXAGON_TOOLS_ROOT=$TOOLS_ROOT" >> "$GITHUB_ENV"
+          path: ~/.ccache
+          key: ccache-android-arm64-${{ github.sha }}
+          restore-keys: ccache-android-arm64-
 
       - name: Set up ccache
         run: |
@@ -169,6 +146,7 @@ jobs:
             echo "CCACHE_COMPILERCHECK=content"
             echo "CCACHE_SLOPPINESS=time_macros,include_file_mtime,include_file_ctime"
           } >> "$GITHUB_ENV"
+          CCACHE_DIR="$HOME/.ccache" ccache --zero-stats || true
 
       - name: Ensure google-services.json Exists
         run: |
@@ -238,19 +216,17 @@ jobs:
             -keypass dummy-ci-password \
             -dname "CN=CI Build, OU=CI, O=PocketPal, L=CI, S=CI, C=US"
 
-      - name: Build Android Prod Release APK
+      - name: Build Android Prod Release APK (Single-Variant arm64-v8a Fast Build)
         working-directory: android
         run: |
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses >/dev/null 2>&1 || true
           sed -i 's/\r$//' gradlew || true
           chmod +x gradlew || true
-          echo "=== Building Android Release APK (Fast Prebuilt Mode) ==="
-          if ORG_GRADLE_PROJECT_rnllamaBuildFromSource=false ./gradlew assembleProdRelease -PrnllamaBuildFromSource=false --stacktrace; then
-            echo "Fast prebuilt APK build succeeded!"
-          else
-            echo "Prebuilt build failed; falling back to full from-source NDK build (rnllamaBuildFromSource=true)..."
-            ./gradlew clean || true
-            ORG_GRADLE_PROJECT_rnllamaBuildFromSource=true ./gradlew assembleProdRelease -PrnllamaBuildFromSource=true --stacktrace
-          fi
+          ./gradlew assembleProdRelease \
+            -PreactNativeArchitectures=arm64-v8a \
+            -PrnllamaBuildFromSource=true \
+            -PrnllamaVariants=rnllama \
+            --no-daemon --stacktrace
 
       - name: Prepare APK Output
         run: |
