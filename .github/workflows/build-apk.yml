@@ -32,28 +32,48 @@ jobs:
             STAGE_DIR=$(mktemp -d)
             unzip -q -o "$ZIP_FILE" -d "$STAGE_DIR"
             rm -f "$ZIP_FILE"
-            PKG_JSON=$(find "$STAGE_DIR" -maxdepth 3 -name "package.json" -not -path "*/node_modules/*" | head -n 1)
-            if [ -n "$PKG_JSON" ]; then
-              SRC_ROOT=$(dirname "$PKG_JSON")
-              echo "Copying extracted project files from $SRC_ROOT into workspace root..."
+            # Find the directory inside STAGE_DIR that contains BOTH package.json AND android/build.gradle (never e2e/package.json!)
+            SRC_ROOT=""
+            if [ -f "$STAGE_DIR/package.json" ] && [ -f "$STAGE_DIR/android/build.gradle" ]; then
+              SRC_ROOT="$STAGE_DIR"
+            else
+              for CANDIDATE in $(find "$STAGE_DIR" -mindepth 1 -maxdepth 2 -type d); do
+                if [ -f "$CANDIDATE/package.json" ] && [ -f "$CANDIDATE/android/build.gradle" ]; then
+                  SRC_ROOT="$CANDIDATE"
+                  break
+                fi
+              done
+            fi
+            if [ -n "$SRC_ROOT" ]; then
+              echo "Copying extracted PocketPal root files from $SRC_ROOT into workspace root..."
               cp -rf "$SRC_ROOT"/. .
             fi
             rm -rf "$STAGE_DIR"
           fi
 
-          # 2. If a nested subfolder (e.g. ./pocketpal-ai-main) contains package.json, overwrite root and remove the duplicate subfolder
-          for SUB_PKG in $(find . -mindepth 2 -maxdepth 2 -name "package.json" -not -path "*/node_modules/*" -not -path "*/.git/*"); do
-            SUBDIR=$(dirname "$SUB_PKG")
-            echo "Found nested project folder $SUBDIR — syncing into workspace root and removing duplicate..."
-            cp -rf "$SUBDIR"/. .
-            rm -rf "$SUBDIR"
+          # 2. If a nested subfolder (e.g. ./pocketpal-ai-main) contains BOTH package.json AND android/build.gradle, sync to root and remove duplicate
+          for CANDIDATE in $(find . -mindepth 1 -maxdepth 1 -type d -not -name ".git" -not -name "node_modules" -not -name "e2e" -not -name "android" -not -name "ios" -not -name "src"); do
+            if [ -f "$CANDIDATE/package.json" ] && [ -f "$CANDIDATE/android/build.gradle" ]; then
+              echo "Found nested project root $CANDIDATE — syncing into workspace root and removing duplicate..."
+              cp -rf "$CANDIDATE"/. .
+              rm -rf "$CANDIDATE"
+            fi
           done
 
-          # 3. Strip Windows CRLF line endings and ensure scripts are executable
+          # 3. Verify root package.json is the main PocketPal package.json (and never e2e/package.json)
+          node -e '
+            const pkg = require("./package.json");
+            console.log("Root package.json name:", pkg.name, "version:", pkg.version);
+            if (pkg.name !== "PocketPal") {
+              throw new Error("Invalid root package.json name: " + pkg.name);
+            }
+          '
+
+          # 4. Strip Windows CRLF line endings and ensure scripts are executable
           find . \( -name "*.sh" -o -name "*.patch" -o -name "gradlew" -o -name ".env" \) -not -path "*/node_modules/*" -exec sed -i 's/\r$//' {} + 2>/dev/null || true
           chmod +x scripts/*.sh android/gradlew 2>/dev/null || true
 
-          # 4. Ensure android/gradle.properties and android/app/build.gradle ABI settings are consistent
+          # 5. Ensure android/gradle.properties and android/app/build.gradle ABI settings are consistent
           sed -i 's/reactNativeArchitectures=arm64-v8a$/reactNativeArchitectures=arm64-v8a,x86_64/' android/gradle.properties || true
           sed -i '/rnllamaBuildFromSource=false/d' android/gradle.properties || true
           python3 -c '
@@ -84,16 +104,15 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Cache node_modules
-        uses: actions/cache@v4
-        with:
-          path: node_modules
-          key: ${{ runner.os }}-node-${{ hashFiles('yarn.lock', 'patches/**') }}
-
       - name: Install Yarn & Dependencies
         run: |
+          set -e
           npm install -g yarn || true
-          yarn install --network-timeout 600000
+          rm -rf node_modules
+          yarn install --check-files --network-timeout 600000
+          # Verify critical React Native Gradle plugin & llama.rn exist in node_modules
+          test -d node_modules/@react-native/gradle-plugin || { echo "ERROR: node_modules/@react-native/gradle-plugin missing!"; exit 1; }
+          test -d node_modules/llama.rn || { echo "ERROR: node_modules/llama.rn missing!"; exit 1; }
           OPENCL_HEADERS_DIR="node_modules/llama.rn/third_party/OpenCL-Headers"
           if [ ! -d "$OPENCL_HEADERS_DIR" ]; then
             mkdir -p "node_modules/llama.rn/third_party"
