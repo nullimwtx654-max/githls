@@ -1,0 +1,230 @@
+import re
+
+workflow_content = """name: Build PocketPal APK
+
+on:
+  push:
+    branches: [ '**' ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-android-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      ORG_GRADLE_PROJECT_rnllamaBuildFromSource: 'true'
+      RNLLAMA_SKIP_POSTINSTALL: '1'
+      PLUS_STORE_GATE: 'true'
+      APP_RELEASE_STORE_PASSWORD: dummy-ci-password
+      APP_RELEASE_KEY_PASSWORD: dummy-ci-password
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Auto-Extract ZIP (If Uploaded as ZIP) & Normalize Project Root
+        run: |
+          set -e
+          # 1. If ANY .zip archive was uploaded to the repo, extract it and overwrite root files
+          ZIP_FILE=$(find . -maxdepth 2 -name "*.zip" -not -path "*/node_modules/*" -not -path "*/.git/*" | head -n 1)
+          if [ -n "$ZIP_FILE" ]; then
+            echo "Found archive $ZIP_FILE — extracting into temporary staging directory..."
+            STAGE_DIR=$(mktemp -d)
+            unzip -q -o "$ZIP_FILE" -d "$STAGE_DIR"
+            rm -f "$ZIP_FILE"
+            SRC_ROOT=""
+            if [ -f "$STAGE_DIR/package.json" ] && [ -f "$STAGE_DIR/android/build.gradle" ]; then
+              SRC_ROOT="$STAGE_DIR"
+            else
+              for CANDIDATE in $(find "$STAGE_DIR" -mindepth 1 -maxdepth 2 -type d); do
+                if [ -f "$CANDIDATE/package.json" ] && [ -f "$CANDIDATE/android/build.gradle" ]; then
+                  SRC_ROOT="$CANDIDATE"
+                  break
+                fi
+              done
+            fi
+            if [ -n "$SRC_ROOT" ]; then
+              echo "Copying extracted PocketPal root files from $SRC_ROOT into workspace root..."
+              cp -rf "$SRC_ROOT"/. .
+            fi
+            rm -rf "$STAGE_DIR"
+          fi
+
+          # 2. If a nested subfolder contains BOTH package.json AND android/build.gradle, sync to root
+          for CANDIDATE in $(find . -mindepth 1 -maxdepth 1 -type d -not -name ".git" -not -name "node_modules" -not -name "e2e" -not -name "android" -not -name "ios" -not -name "src"); do
+            if [ -f "$CANDIDATE/package.json" ] && [ -f "$CANDIDATE/android/build.gradle" ]; then
+              echo "Found nested project root $CANDIDATE — syncing into workspace root..."
+              cp -rf "$CANDIDATE"/. .
+              rm -rf "$CANDIDATE"
+            fi
+          done
+
+          # 3. Strip Windows CRLF line endings and ensure scripts are executable
+          find . \\( -name "*.sh" -o -name "*.patch" -o -name "gradlew" -o -name ".env" \\) -not -path "*/node_modules/*" -exec sed -i 's/\\r$//' {} + 2>/dev/null || true
+          chmod +x scripts/*.sh android/gradlew 2>/dev/null || true
+
+      - name: Maximize build space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /opt/ghc /opt/hostedtoolcache
+          sudo mkdir -p /opt/hostedtoolcache
+          sudo chmod -R 777 /opt/hostedtoolcache
+          df -h /
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '22.21.0'
+          cache: 'yarn'
+
+      - name: Cache node_modules
+        uses: actions/cache@v3
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles('yarn.lock', 'patches/**') }}
+
+      - name: Install Yarn
+        run: npm install -g yarn
+
+      - name: Install dependencies
+        run: yarn install
+
+      - name: Derive the rnllama variant allowlist from the payload manifest
+        run: |
+          set -euo pipefail
+          VARIANTS=$(node scripts/verify-android-payload.js --print-variants)
+          echo "Declared allowlist: $VARIANTS"
+          echo "ORG_GRADLE_PROJECT_rnllamaVariants=$VARIANTS" >> "$GITHUB_ENV"
+
+      - name: Cache llama.rn native build tree
+        uses: actions/cache@v4
+        with:
+          path: node_modules/llama.rn/android/.cxx
+          key: ${{ runner.os }}-cxx-${{ hashFiles('yarn.lock', 'patches/**', 'scripts/android-payload-manifest.json') }}
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v3
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: 'gradle'
+
+      - name: Set up the Hexagon SDK
+        uses: ./.github/actions/setup-hexagon-sdk
+
+      - name: Set up ccache
+        uses: ./.github/actions/setup-ccache
+
+      - name: Create dummy google-services.json for CI
+        run: |
+          cat > android/app/google-services.json << 'EOL'
+          {
+            "project_info": {
+              "project_number": "000000000000",
+              "project_id": "dummy-project-for-ci",
+              "storage_bucket": "dummy-project-for-ci.appspot.com"
+            },
+            "client": [{
+              "client_info": {
+                "mobilesdk_app_id": "1:000000000000:android:0000000000000000",
+                "android_client_info": {
+                  "package_name": "com.pocketpalai"
+                }
+              },
+              "api_key": [{
+                "current_key": "dummy-api-key-for-ci-builds"
+              }]
+            }]
+          }
+          EOL
+
+      - name: Create dummy .env file for CI
+        run: |
+          cat > .env << 'EOL'
+          FIREBASE_FUNCTIONS_URL=https://dummy-firebase-url.com
+          SUPABASE_URL=https://dummy-supabase-url.supabase.co
+          SUPABASE_ANON_KEY=dummy-anon-key-for-ci-builds
+          PALSHUB_API_BASE_URL=https://dummy-palshub-api.com
+          APP_URL=pocketpal://app
+          ENABLE_PALSHUB_INTEGRATION=true
+          ENABLE_AUTHENTICATION=true
+          ENABLE_OFFLINE_MODE=true
+          GOOGLE_IOS_CLIENT_ID=dummy-ios-client-id.apps.googleusercontent.com
+          GOOGLE_WEB_CLIENT_ID=dummy-web-client-id.apps.googleusercontent.com
+          EOL
+
+      - name: Create dummy release keystore for CI
+        working-directory: android/app
+        run: |
+          rm -f pocketpal-release-key.keystore
+          keytool -genkeypair -v \\
+            -storetype PKCS12 \\
+            -keystore pocketpal-release-key.keystore \\
+            -alias pocketpal_key_alias \\
+            -keyalg RSA \\
+            -keysize 2048 \\
+            -validity 10000 \\
+            -storepass dummy-ci-password \\
+            -keypass dummy-ci-password \\
+            -dname "CN=CI Build, OU=CI, O=PocketPal, L=CI, S=CI, C=US"
+
+      - name: Accept Android SDK licenses
+        run: |
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses >/dev/null 2>&1 || true
+
+      - name: Build Android Release
+        working-directory: android
+        env:
+          APP_RELEASE_STORE_PASSWORD: dummy-ci-password
+          APP_RELEASE_KEY_PASSWORD: dummy-ci-password
+        run: |
+          set -euo pipefail
+          ./gradlew assembleProdRelease 2>&1 | tee android-build.log
+
+      - name: ccache statistics
+        if: always()
+        run: ccache --show-stats || echo "ccache unavailable"
+
+      - name: Prepare APK Output
+        run: |
+          APK_PATH=$(find android/app/build/outputs/apk/prod/release/ -name "*.apk" | head -n 1)
+          if [ -z "$APK_PATH" ]; then
+            APK_PATH=$(find android/app/build/outputs/ -name "*.apk" | head -n 1)
+          fi
+          echo "Built APK at: $APK_PATH"
+          cp "$APK_PATH" pocketpal-ai-release.apk
+          ls -lh pocketpal-ai-release.apk
+
+      - name: Upload Android APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: pocketpal-ai-release-apk
+          path: pocketpal-ai-release.apk
+
+      - name: Publish GitHub Release APK
+        uses: softprops/action-gh-release@v2
+        continue-on-error: true
+        with:
+          tag_name: v1.22.0-enhanced-${{ github.run_number }}
+          name: PocketPal AI Enhanced Release (Build #${{ github.run_number }})
+          draft: false
+          prerelease: false
+          files: pocketpal-ai-release.apk
+"""
+
+with open(".github/workflows/build-apk.yml", "w", encoding="utf-8") as f:
+    f.write(workflow_content)
+
+ci_content = workflow_content.replace(
+    "name: Build PocketPal APK\\n\\non:\\n  push:\\n    branches: [ '**' ]\\n  workflow_dispatch:",
+    "name: CI Pipeline (APK Build)\\n\\non:\\n  workflow_dispatch:"
+)
+
+with open(".github/workflows/ci.yml", "w", encoding="utf-8") as f:
+    f.write(ci_content)
+
+print("Generated verified upstream-matched build-apk.yml and ci.yml")

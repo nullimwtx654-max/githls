@@ -1,0 +1,190 @@
+import {StyleSheet} from 'react-native';
+import {Theme} from '../../utils/types';
+import {fontStyles} from '../../utils/theme';
+
+export const createStyles = (theme: Theme) =>
+  StyleSheet.create({
+    container: {
+      paddingHorizontal: 16,
+      paddingVertical: 10,
+      gap: 14,
+    },
+    tabSection: {
+      gap: 10,
+    },
+    tabsContainer: {
+      flexDirection: 'row',
+      backgroundColor: theme.dark ? '#141416' : '#F1F2F4',
+      borderRadius: 10,
+      padding: 3,
+      marginBottom: 4,
+    },
+    tabButton: {
+      flex: 1,
+      paddingVertical: 7,
+      alignItems: 'center',
+      justifyContent: 'center',
+      borderRadius: 8,
+    },
+    tabButtonActive: {
+      backgroundColor: theme.dark ? '#27272A' : '#FFFFFF',
+      shadowColor: '#000',
+      shadowOffset: {width: 0, height: 1},
+      shadowOpacity: theme.dark ? 0.25 : 0.08,
+      shadowRadius: 2,
+      elevation: 1,
+    },
+    tabButtonText: {
+      ...fontStyles.medium,
+      fontSize: 12,
+      color: theme.colors.onSurfaceVariant,
+    },
+    tabButtonTextActive: {
+      ...fontStyles.semibold,
+      color: theme.colors.onSurface,
+    },
+    sectionTitle: {
+      ...fontStyles.semibold,
+      fontSize: 14,
+      color: theme.colors.onSurface,
+      marginTop: 4,
+    },
+    sectionHeaderRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      marginTop: 8,
+    },
+    description: {
+      ...fontStyles.regular,
+      fontSize: 13,
+      color: theme.colors.onSurfaceVariant,
+      lineHeight: 18,
+    },
+    emptyNotice: {
+      ...fontStyles.regular,
+      fontSize: 13,
+      color: theme.colors.onSurfaceVariant,
+      fontStyle: 'italic',
+      textAlign: 'center',
+      marginVertical: 16,
+    },
+    toneGrid: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      gap: 8,
+      marginVertical: 2,
+    },
+    toneChip: {
+      paddingHorizontal: 12,
+      paddingVertical: 7,
+      borderRadius: 10,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: theme.colors.border,
+      backgroundColor: theme.dark ? '#141416' : '#F2F3F5',
+    },
+    toneChipActive: {
+      backgroundColor: theme.colors.primary,
+      borderColor: theme.colors.primary,
+    },
+    toneChipText: {
+      ...fontStyles.medium,
+      fontSize: 13,
+      color: theme.colors.onSurfaceVariant,
+    },
+    toneChipTextActive: {
+      ...fontStyles.semibold,
+      color: theme.colors.onPrimary,
+    },
+    switchRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingVertical: 8,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: theme.colors.border,
+    },
+    switchTextContainer: {
+      flex: 1,
+      paddingRight: 12,
+    },
+    switchLabel: {
+      ...fontStyles.semibold,
+      fontSize: 14,
+      color: theme.colors.onSurface,
+    },
+    switchDesc: {
+      ...fontStyles.regular,
+      fontSize: 12,
+      color: theme.colors.onSurfaceVariant,
+      marginTop: 2,
+      lineHeight: 16,
+    },
+    memoryItem: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      padding: 12,
+      borderRadius: 10,
+      backgroundColor: theme.dark ? '#121214' : '#F8F9FA',
+      marginBottom: 6,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: theme.colors.border,
+    },
+    memoryText: {
+      flex: 1,
+      ...fontStyles.regular,
+      fontSize: 13,
+      color: theme.colors.onSurface,
+      lineHeight: 18,
+    },
+    memoryMeta: {
+      ...fontStyles.regular,
+      fontSize: 11,
+      color: theme.colors.onSurfaceVariant,
+      marginTop: 4,
+    },
+    addMemoryRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+      marginTop: 2,
+    },
+    chatSummaryCard: {
+      padding: 12,
+      borderRadius: 10,
+      backgroundColor: theme.dark ? '#121214' : '#F8F9FA',
+      marginBottom: 6,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: theme.colors.border,
+    },
+    chatSummaryHeader: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      marginBottom: 4,
+    },
+    chatSummaryTitle: {
+      ...fontStyles.semibold,
+      fontSize: 13,
+      color: theme.colors.onSurface,
+      flex: 1,
+    },
+    chatSummaryDate: {
+      ...fontStyles.regular,
+      fontSize: 11,
+      color: theme.colors.onSurfaceVariant,
+    },
+    chatSummaryBody: {
+      ...fontStyles.regular,
+      fontSize: 12,
+      color: theme.colors.onSurfaceVariant,
+      lineHeight: 18,
+    },
+    footerActions: {
+      flexDirection: 'row',
+      justifyContent: 'flex-end',
+      width: '100%',
+      gap: 12,
+    },
+  });
