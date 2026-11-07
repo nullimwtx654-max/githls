@@ -1,0 +1,156 @@
+name: CI & Build Android APK
+
+on:
+  push:
+    branches: ['*']
+  pull_request:
+    branches: ['*']
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-apk:
+    name: Build Android Release APK (arm64-v8a)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Enable Corepack & Setup Yarn 3
+        run: |
+          corepack enable
+          yarn --version
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Install JS Dependencies
+        run: |
+          yarn config set nodeLinker node-modules
+          yarn config set enableImmutableInstalls false
+          yarn install --mode=skip-build || yarn install
+          if [ ! -d "node_modules/@react-native/gradle-plugin" ]; then
+            rm -rf .yarn/cache node_modules
+            YARN_NODE_LINKER=node-modules yarn install
+          fi
+          test -d "node_modules/@react-native/gradle-plugin"
+
+      - name: Configure Pre-Installed Android SDK, NDK 27.1.12297006 & OpenCL Headers
+        run: |
+          export ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> "$GITHUB_ENV"
+          SDKMANAGER=$(find "$ANDROID_HOME" -name sdkmanager -type f 2>/dev/null | head -n 1 || which sdkmanager)
+          echo "Using sdkmanager at: $SDKMANAGER"
+          yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses > /dev/null || true
+          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" "platform-tools" "platforms;android-36" "build-tools;36.0.0" "ndk;27.1.12297006" "cmake;3.31.6"
+          sudo apt-get update -y
+          sudo apt-get install -y ninja-build ocl-icd-opencl-dev opencl-headers clinfo
+
+      - name: Prepare Environment & Keystore
+        run: |
+          if [ ! -f .env ]; then
+            cp .env.example .env 2>/dev/null || touch .env
+          fi
+          chmod +x android/gradlew
+          mkdir -p android/app/src/debug android/app/src/release
+          if [ ! -f android/app/google-services.json ]; then
+            cat << 'EOF' > android/app/google-services.json
+          {
+            "project_info": {
+              "project_number": "000000000000",
+              "project_id": "pocketpal-local-build",
+              "storage_bucket": "pocketpal-local-build.appspot.com"
+            },
+            "client": [
+              {
+                "client_info": {
+                  "mobilesdk_app_id": "1:000000000000:android:0000000000000000",
+                  "android_client_info": { "package_name": "com.pocketpalai" }
+                },
+                "oauth_client": [],
+                "api_key": [{ "current_key": "AIzaSyDummyKeyForLocalCompilation000000" }],
+                "services": { "appinvite_service": { "other_platform_oauth_client": [] } }
+              },
+              {
+                "client_info": {
+                  "mobilesdk_app_id": "1:000000000000:android:0000000000000001",
+                  "android_client_info": { "package_name": "com.pocketpal" }
+                },
+                "oauth_client": [],
+                "api_key": [{ "current_key": "AIzaSyDummyKeyForLocalCompilation000000" }],
+                "services": { "appinvite_service": { "other_platform_oauth_client": [] } }
+              },
+              {
+                "client_info": {
+                  "mobilesdk_app_id": "1:000000000000:android:0000000000000002",
+                  "android_client_info": { "package_name": "com.pocketpalai.e2e" }
+                },
+                "oauth_client": [],
+                "api_key": [{ "current_key": "AIzaSyDummyKeyForLocalCompilation000000" }],
+                "services": { "appinvite_service": { "other_platform_oauth_client": [] } }
+              }
+            ],
+            "configuration_version": "1"
+          }
+          EOF
+          fi
+          cp android/app/google-services.json android/app/src/debug/google-services.json
+          cp android/app/google-services.json android/app/src/release/google-services.json
+          if [ ! -f android/app/debug.keystore ]; then
+            keytool -genkeypair -v -keystore android/app/debug.keystore \
+              -storepass android -alias androiddebugkey -keypass android \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+      - name: Initialize llama.rn C++ Sources
+        run: |
+          if [ -d "node_modules/@pocketpalai/llama.rn" ] && [ ! -f "node_modules/@pocketpalai/llama.rn/cpp/ggml.c" ]; then
+            git clone --depth 1 https://github.com/mybigday/llama.rn.git /tmp/llama-rn-src || true
+            if [ -d "/tmp/llama-rn-src/cpp" ]; then
+              cp -rn /tmp/llama-rn-src/cpp/* node_modules/@pocketpalai/llama.rn/cpp/ || true
+            fi
+          fi
+
+      - name: Build Android Release APK (Single-Variant arm64-v8a Fast Build)
+        working-directory: android
+        env:
+          ORG_GRADLE_PROJECT_reactNativeArchitectures: arm64-v8a
+          GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx6144m -Dorg.gradle.daemon=false -Dorg.gradle.workers.max=4"
+          NODE_OPTIONS: "--max-old-space-size=8192"
+        run: |
+          ./gradlew assembleProdRelease \
+            -PreactNativeArchitectures=arm64-v8a \
+            -PrnllamaBuildFromSource=true \
+            -PrnllamaVariants=rnllama \
+            --no-daemon --stacktrace
+
+      - name: Collect APK
+        run: |
+          mkdir -p dist-apk
+          find android/app/build/outputs/apk -name "*.apk" -exec cp -v {} dist-apk/ \;
+          ls -lh dist-apk/
+
+      - name: Upload Release APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PocketPal-AI-CI-APK
+          path: dist-apk/*.apk
+          if-no-files-found: error
+          retention-days: 30
